@@ -1,0 +1,192 @@
+
+# Monitor report usage with Power BI REST API (Python)
+
+This article describes how to use the **Power BI REST API** to retrieve **report usage information** (most viewed reports) using **Activity Events** and **Python**.
+
+---
+
+## Prerequisites
+
+Before you begin, ensure that you have:
+
+* A **Power BI tenant** with **Audit logs enabled**
+* An **Azure AD app registration**
+* API permissions:
+
+  * `PowerBI.Read.All`
+  * `AuditLog.Read.All`
+* Admin consent granted
+* Python 3.9 or later
+
+---
+
+## Install required libraries
+
+```bash
+pip install msal requests pandas
+```
+
+---
+
+## Step 1: Authenticate with Azure AD
+
+This example uses **client credentials flow** with a **service principal**.
+
+```python
+import msal
+import requests
+import pandas as pd
+from datetime import datetime, timedelta
+```
+
+```python
+TENANT_ID = "<tenant-id>"
+CLIENT_ID = "<client-id>"
+CLIENT_SECRET = "<client-secret>"
+
+AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
+SCOPE = ["https://analysis.windows.net/powerbi/api/.default"]
+
+app = msal.ConfidentialClientApplication(
+    CLIENT_ID,
+    authority=AUTHORITY,
+    client_credential=CLIENT_SECRET
+)
+
+token_response = app.acquire_token_for_client(scopes=SCOPE)
+
+if "access_token" not in token_response:
+    raise RuntimeError("Failed to acquire access token")
+
+access_token = token_response["access_token"]
+
+headers = {
+    "Authorization": f"Bearer {access_token}",
+    "Content-Type": "application/json"
+}
+```
+
+---
+
+## Step 2: Retrieve Power BI activity events
+
+Use the **Activity Events API** to retrieve audit logs related to report usage.
+
+```python
+end_time = datetime.utcnow()
+start_time = end_time - timedelta(days=7)
+
+start_time_str = start_time.strftime("%Y-%m-%dT%H:%M:%S")
+end_time_str = end_time.strftime("%Y-%m-%dT%H:%M:%S")
+
+url = (
+    "https://api.powerbi.com/v1.0/myorg/admin/activityevents"
+    f"?startDateTime='{start_time_str}'"
+    f"&endDateTime='{end_time_str}'"
+)
+```
+
+```python
+events = []
+
+while url:
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+
+    result = response.json()
+    events.extend(result.get("activityEventEntities", []))
+    url = result.get("continuationUri")
+```
+
+---
+
+## Step 3: Filter report view events
+
+Filter only events where users viewed reports (`ViewReport` activity).
+
+```python
+df = pd.DataFrame(events)
+
+df_report_views = df[df["Activity"] == "ViewReport"]
+```
+
+---
+
+## Step 4: Select relevant properties
+
+```python
+columns = [
+    "CreationTime",
+    "UserId",
+    "ReportId",
+    "ReportName",
+    "WorkspaceName"
+]
+
+df_report_views = df_report_views[columns]
+```
+
+---
+
+## Step 5: Aggregate report usage
+
+Group events by report and calculate total views.
+
+```python
+most_consumed_reports = (
+    df_report_views
+    .groupby(["WorkspaceName", "ReportName", "ReportId"])
+    .size()
+    .reset_index(name="ViewCount")
+    .sort_values("ViewCount", ascending=False)
+)
+```
+
+---
+
+## Step 6: Display top reports
+
+```python
+print(most_consumed_reports.head(10))
+```
+
+---
+
+## Step 7: Export results
+
+```python
+most_consumed_reports.to_csv(
+    "powerbi_most_consumed_reports.csv",
+    index=False
+)
+```
+
+---
+
+## Output example
+
+| WorkspaceName | ReportName         | ViewCount |
+| ------------- | ------------------ | --------- |
+| Sales         | Executive Overview | 1,245     |
+| Finance       | Monthly P&L        | 982       |
+| Operations    | KPI Dashboard      | 811       |
+
+---
+
+## Notes and limitations
+
+* Activity Events are available for the last **30 days**
+* Timestamps are returned in **UTC**
+* Requires **Power BI admin permissions**
+* Dataset, dashboard, and report events are logged separately
+
+---
+
+## Next steps
+
+* Analyze **unique users per report**
+* Identify **unused or low-adoption reports**
+* Load results into **Fabric Lakehouse**
+* Build a **Power BI usage & adoption dashboard**
+* Automate extraction using **Azure Functions or Fabric Notebooks**
+
